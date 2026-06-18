@@ -30,7 +30,8 @@ const validatePokemon = (
 
       return (await res.json()) as PokemonApiResponse;
     },
-    (error) => `Failed to fetch Pokemon: ${error}`,
+    (error) =>
+      error instanceof Error ? error.message : "Failed to fetch Pokemon",
   );
 
 export async function playerRoutes(fastify: FastifyInstance) {
@@ -43,6 +44,9 @@ export async function playerRoutes(fastify: FastifyInstance) {
   }>("/tournaments/:tournamentId/players", async (request, reply) => {
     // TODO: Implement Pokemon validation and player creation logic
 
+    if (!request.body?.name || typeof request.body.name !== "string")
+      return reply.status(400).send({ error: "Player name is required" });
+
     const tournamentExists = pipe(
       getTournament(request.params.tournamentId),
       O.fold(
@@ -52,12 +56,12 @@ export async function playerRoutes(fastify: FastifyInstance) {
     );
 
     if (!tournamentExists)
-      reply.status(404).send({ error: "Tournament not found" });
+      return reply.status(404).send({ error: "Tournament not found" });
 
     pipe(
       await validatePokemon(request.body.name)(),
       E.chain((pokemon) =>
-        createPlayer(pokemon.name, request.params.tournamentId, {
+        createPlayer(request.body.name, request.params.tournamentId, {
           id: pokemon.id,
           types: pokemon.types.map((t) => t.type.name),
           height: pokemon.height,
@@ -65,7 +69,11 @@ export async function playerRoutes(fastify: FastifyInstance) {
         }),
       ),
       E.fold(
-        (error) => reply.status(400).send({ error }),
+        (error) => {
+          if (error === "Tournament not found")
+            return reply.status(404).send({ error });
+          return reply.status(400).send({ error });
+        },
         (player) => {
           const response: PlayerResponse = player;
           console.log("responselayer:,", player);
