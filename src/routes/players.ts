@@ -1,10 +1,14 @@
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { pipe } from 'fp-ts/lib/function'
-import * as E from 'fp-ts/lib/Either'
-import * as O from 'fp-ts/lib/Option'
-import * as TE from 'fp-ts/lib/TaskEither'
-import { CreatePlayerRequest, PlayerResponse, PokemonApiResponse } from '../types/index.ts'
-import { createPlayer, getTournament } from '../storage/index.ts'
+import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import { pipe } from "fp-ts/lib/function";
+import * as E from "fp-ts/lib/Either";
+import * as O from "fp-ts/lib/Option";
+import * as TE from "fp-ts/lib/TaskEither";
+import {
+  CreatePlayerRequest,
+  PlayerResponse,
+  PokemonApiResponse,
+} from "../types/index.ts";
+import { createPlayer, getTournament } from "../storage/index.ts";
 
 // TODO for interviewee: Implement player routes using fp-ts patterns
 // CRITICAL REQUIREMENT: ONLY Pokemon can be added as players - reject all non-Pokemon names!
@@ -12,21 +16,64 @@ import { createPlayer, getTournament } from '../storage/index.ts'
 // TODO: Implement Pokemon API validation function using TaskEither
 // const validatePokemon = (name: string): TE.TaskEither<string, PokemonApiResponse> => ...
 
+const validatePokemon = (
+  name: string,
+): TE.TaskEither<string, PokemonApiResponse> =>
+  TE.tryCatch(
+    async () => {
+      const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${name}`);
+      console.log("res: ", res);
+
+      if (!res.ok) {
+        throw new Error("Name is not a valid Pokemon");
+      }
+
+      return (await res.json()) as PokemonApiResponse;
+    },
+    (error) => `Failed to fetch Pokemon: ${error}`,
+  );
+
 export async function playerRoutes(fastify: FastifyInstance) {
-  
   // TODO: Implement POST /tournaments/:tournamentId/players endpoint
   // REQUIREMENT: Only Pokemon names are allowed - validate using PokeAPI
-  
-  fastify.post<{ 
-    Params: { tournamentId: string }, 
-    Body: CreatePlayerRequest 
-  }>('/tournaments/:tournamentId/players', async (request, reply) => {
-    
+
+  fastify.post<{
+    Params: { tournamentId: string };
+    Body: CreatePlayerRequest;
+  }>("/tournaments/:tournamentId/players", async (request, reply) => {
     // TODO: Implement Pokemon validation and player creation logic
-    
-    reply.status(501).send({ error: 'Not implemented yet' })
-    
-    reply.status(501).send({ error: 'Not implemented yet' })
-  })
-  
+
+    const tournamentExists = pipe(
+      getTournament(request.params.tournamentId),
+      O.fold(
+        () => false,
+        () => true,
+      ),
+    );
+
+    if (!tournamentExists)
+      reply.status(404).send({ error: "Tournament not found" });
+
+    pipe(
+      await validatePokemon(request.body.name)(),
+      E.chain((pokemon) =>
+        createPlayer(pokemon.name, request.params.tournamentId, {
+          id: pokemon.id,
+          types: pokemon.types.map((t) => t.type.name),
+          height: pokemon.height,
+          weight: pokemon.weight,
+        }),
+      ),
+      E.fold(
+        (error) => reply.status(400).send({ error }),
+        (player) => {
+          const response: PlayerResponse = player;
+          console.log("responselayer:,", player);
+          return reply.status(201).send(response);
+        },
+      ),
+    );
+
+    // reply.status(501).send({ error: "Not implemented yet" });
+  });
 }
