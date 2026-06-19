@@ -5,10 +5,16 @@ import * as O from "fp-ts/lib/Option";
 import * as TE from "fp-ts/lib/TaskEither";
 import {
   CreatePlayerRequest,
+  Player,
   PlayerResponse,
   PokemonApiResponse,
 } from "../types/index.ts";
-import { createPlayer, getTournament } from "../storage/index.ts";
+import {
+  createPlayer,
+  getPlayersByTourId,
+  getPlayersByTournament,
+  getTournament,
+} from "../storage/index.ts";
 
 // TODO for interviewee: Implement player routes using fp-ts patterns
 // CRITICAL REQUIREMENT: ONLY Pokemon can be added as players - reject all non-Pokemon names!
@@ -82,6 +88,42 @@ export async function playerRoutes(fastify: FastifyInstance) {
           console.log("responselayer:,", player);
           return reply.status(201).send(response);
         },
+      ),
+    );
+
+    // reply.status(501).send({ error: "Not implemented yet" });
+  });
+
+  fastify.get<{
+    Params: { tournamentId: string };
+    Body: CreatePlayerRequest;
+  }>("/tournaments/:tournamentId/players", async (request, reply) => {
+    // TODO: Implement Pokemon validation and player creation logic
+    const { tournamentId } = request.params;
+
+    if (typeof tournamentId !== "string")
+      return reply.status(400).send({ error: "Tournament ID is required" });
+
+    const tournamentExists = pipe(
+      getTournament(tournamentId),
+      O.fold(
+        () => false,
+        () => true,
+      ),
+    );
+
+    if (!tournamentExists)
+      return reply.status(404).send({ error: "Tournament not found" });
+
+    pipe(
+      getPlayersByTourId(tournamentId),
+      E.fold(
+        (error) => {
+          if (error === "Tournament not found")
+            return reply.status(404).send({ error });
+          return reply.status(400).send({ error });
+        },
+        (player) => reply.status(200).send(player),
       ),
     );
 

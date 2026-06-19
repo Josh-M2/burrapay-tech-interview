@@ -3,7 +3,7 @@ import { pipe } from "fp-ts/lib/function";
 import * as E from "fp-ts/lib/Either";
 import * as TE from "fp-ts/lib/TaskEither";
 import { CreateTournamentRequest, TournamentResponse } from "../types/index.ts";
-import { createTournament } from "../storage/index.ts";
+import { createTournament, getTournaments } from "../storage/index.ts";
 
 export async function tournamentRoutes(fastify: FastifyInstance) {
   // TODO: Implement POST /tournaments endpoint using fp-ts patterns
@@ -43,4 +43,13 @@ export async function tournamentRoutes(fastify: FastifyInstance) {
   );
 
   // TODO: Implement GET /tournaments endpoint
+  fastify.get("/tournaments", async (request, reply) => {
+    return pipe(
+      getTournaments(),
+      E.fold(
+        (error) => reply.status(404).send({ error }),
+        (tournas) => reply.status(200).send(tournas),
+      ),
+    );
+  });
 }
