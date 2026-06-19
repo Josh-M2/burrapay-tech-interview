@@ -5,6 +5,7 @@ import * as O from "fp-ts/lib/Option";
 import * as TE from "fp-ts/lib/TaskEither";
 import {
   CreatePlayerRequest,
+  CreatePlayerRequestCodec,
   Player,
   PlayerResponse,
   PokemonApiResponse,
@@ -50,11 +51,25 @@ export async function playerRoutes(fastify: FastifyInstance) {
   }>("/tournaments/:tournamentId/players", async (request, reply) => {
     // TODO: Implement Pokemon validation and player creation logic
 
-    const { name } = request.body;
+    const decodedBody = CreatePlayerRequestCodec.decode(request.body);
+
+    if (E.isLeft(decodedBody)) {
+      fastify.log.warn({
+        event: "invalid_player_reqeust_body",
+        body: request.body,
+      });
+
+      return reply.status(400).send({ error: "Invalid body request" });
+    }
+
+    const { name } = decodedBody.right;
     const { tournamentId } = request.params;
 
-    if (!name || typeof tournamentId !== "string")
-      return reply.status(400).send({ error: "Player name is required" });
+    fastify.log.info({
+      event: "create_player_request",
+      tournamentId,
+      playername: name,
+    });
 
     const tournamentExists = pipe(
       getTournament(tournamentId),
@@ -64,26 +79,53 @@ export async function playerRoutes(fastify: FastifyInstance) {
       ),
     );
 
-    if (!tournamentExists)
+    if (!tournamentExists) {
+      fastify.log.warn({
+        event: "tournament_not_found",
+        tournamentId,
+      });
+
       return reply.status(404).send({ error: "Tournament not found" });
+    }
 
     pipe(
       await validatePokemon(request.body.name)(),
-      E.chain((pokemon) =>
-        createPlayer(name, tournamentId, {
+      E.chain((pokemon) => {
+        fastify.log.info({
+          event: "validated_pokemon",
+          pokemonId: pokemon.id,
+          pokemonName: pokemon.name,
+          tournamentId,
+        });
+
+        return createPlayer(name, tournamentId, {
           id: pokemon.id,
           types: pokemon.types.map((t) => t.type.name),
           height: pokemon.height,
           weight: pokemon.weight,
-        }),
-      ),
+        });
+      }),
       E.fold(
         (error) => {
+          fastify.log.error({
+            event: "create_player_failed",
+            tournamentId,
+            playerName: name,
+            error,
+          });
+
           if (error === "Tournament not found")
             return reply.status(404).send({ error });
           return reply.status(400).send({ error });
         },
         (player) => {
+          fastify.log.info({
+            event: "created_player",
+            playerId: player.id,
+            playerName: player.name,
+            tournamentId: player.tournamentId,
+          });
+
           const response: PlayerResponse = player;
           console.log("responselayer:,", player);
           return reply.status(201).send(response);
@@ -101,8 +143,19 @@ export async function playerRoutes(fastify: FastifyInstance) {
     // TODO: Implement Pokemon validation and player creation logic
     const { tournamentId } = request.params;
 
-    if (typeof tournamentId !== "string")
+    fastify.log.info({
+      event: "get_players_request_with_tournamentId",
+      tournamentId,
+    });
+
+    if (typeof tournamentId !== "string") {
+      fastify.log.warn({
+        event: "invalid_tournamentId",
+        tournamentId,
+      });
+
       return reply.status(400).send({ error: "Tournament ID is required" });
+    }
 
     const tournamentExists = pipe(
       getTournament(tournamentId),
@@ -112,18 +165,36 @@ export async function playerRoutes(fastify: FastifyInstance) {
       ),
     );
 
-    if (!tournamentExists)
+    if (!tournamentExists) {
+      fastify.log.warn({
+        event: "tournament_not_found",
+        tournamentId,
+      });
       return reply.status(404).send({ error: "Tournament not found" });
+    }
 
     pipe(
       getPlayersByTourId(tournamentId),
       E.fold(
         (error) => {
+          fastify.log.error({
+            event: "get_players_failed",
+            tournamentId,
+            error,
+          });
+
           if (error === "Tournament not found")
             return reply.status(404).send({ error });
           return reply.status(400).send({ error });
         },
-        (player) => reply.status(200).send(player),
+        (players) => {
+          fastify.log.info({
+            event: "players_retrieved",
+            tournamentId,
+            playerCount: players.length,
+          });
+          return reply.status(200).send(players);
+        },
       ),
     );
 

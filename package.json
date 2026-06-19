@@ -21,6 +21,7 @@
   "dependencies": {
     "fastify": "^5.6.0",
     "fp-ts": "^2.16.11",
+    "io-ts": "^2.2.22",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
