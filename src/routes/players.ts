@@ -44,11 +44,14 @@ export async function playerRoutes(fastify: FastifyInstance) {
   }>("/tournaments/:tournamentId/players", async (request, reply) => {
     // TODO: Implement Pokemon validation and player creation logic
 
-    if (!request.body?.name || typeof request.body.name !== "string")
+    const { name } = request.body;
+    const { tournamentId } = request.params;
+
+    if (!name || typeof tournamentId !== "string")
       return reply.status(400).send({ error: "Player name is required" });
 
     const tournamentExists = pipe(
-      getTournament(request.params.tournamentId),
+      getTournament(tournamentId),
       O.fold(
         () => false,
         () => true,
@@ -61,7 +64,7 @@ export async function playerRoutes(fastify: FastifyInstance) {
     pipe(
       await validatePokemon(request.body.name)(),
       E.chain((pokemon) =>
-        createPlayer(request.body.name, request.params.tournamentId, {
+        createPlayer(name, tournamentId, {
           id: pokemon.id,
           types: pokemon.types.map((t) => t.type.name),
           height: pokemon.height,

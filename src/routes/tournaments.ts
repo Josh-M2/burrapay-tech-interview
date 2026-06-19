@@ -11,14 +11,17 @@ export async function tournamentRoutes(fastify: FastifyInstance) {
     "/tournaments",
     async (request, reply) => {
       // TODO: Use createTournament() and handle Either result with pipe/E.fold
+
+      const { name } = request.body;
+
       try {
-        if (typeof request.body.name !== "string")
+        if (typeof name !== "string")
           return reply
             .status(400)
             .send({ error: "Tournament name is required" });
 
         pipe(
-          createTournament(request.body.name),
+          createTournament(name),
           E.fold(
             (error) => reply.status(400).send({ error }),
             (tournament) => {
