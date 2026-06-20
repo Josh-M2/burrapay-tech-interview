@@ -20,18 +20,15 @@ export interface Player {
   };
 }
 
-// Pokemon API response type (for reference)
-export interface PokemonApiResponse {
-  id: number;
-  name: string;
-  types: Array<{
-    type: {
-      name: string;
-    };
-  }>;
-  height: number;
-  weight: number;
-}
+export const PokemonApiResponseCodec = t.type({
+  id: t.number,
+  name: t.string,
+  types: t.array(t.type({ type: t.type({ name: t.string }) })),
+  height: t.number,
+  weight: t.number,
+});
+
+export type PokemonApiResponse = t.TypeOf<typeof PokemonApiResponseCodec>;
 
 // Request types for creating tournaments
 export const CreateTournamentRequestCodec = t.type({
