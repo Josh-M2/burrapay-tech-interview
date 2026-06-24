@@ -97,11 +97,36 @@ const isValidPokemonName = (name: string): E.Either<string, string> => {
   return E.right(normalized);
 };
 
+const isMegaPokemon = (
+  name: string,
+  tournamentId: string,
+): E.Either<string, string> => {
+  if (!tournamentId) {
+    return E.left("TournamentId is required");
+  }
+
+  const tournamentData = getTournament(tournamentId);
+
+  if (O.isNone(tournamentData)) {
+    return E.left("Tournament not found");
+  }
+
+  const { isMega } = tournamentData.value;
+
+  if (isMega && !name.endsWith("mega")) {
+    return E.left("Only Mega Pokemon are allowed in Mega tournaments");
+  }
+
+  return E.right(name);
+};
+
 const validatePokemon = (
   name: string,
+  tournamentId: string,
 ): TE.TaskEither<string, PokemonApiResponse> =>
   pipe(
-    isValidPokemonName(name),
+    isMegaPokemon(name, tournamentId),
+    E.chain((name) => isValidPokemonName(name)),
     TE.fromEither,
     TE.chain((normalized) =>
       pipe(
@@ -197,7 +222,7 @@ export async function playerRoutes(fastify: FastifyInstance) {
     }
 
     pipe(
-      await validatePokemon(request.body.name)(),
+      await validatePokemon(request.body.name, tournamentId)(),
       E.chain((pokemon) => {
         fastify.log.info({
           event: "validated_pokemon",

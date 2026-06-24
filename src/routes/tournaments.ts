@@ -31,7 +31,7 @@ export async function tournamentRoutes(fastify: FastifyInstance) {
         return reply.status(400).send("Invalid body request");
       }
 
-      const { name } = decodedBody.right;
+      const { name, isMega } = decodedBody.right;
 
       fastify.log.info({
         event: "create_tournament_validation_success",
@@ -39,7 +39,7 @@ export async function tournamentRoutes(fastify: FastifyInstance) {
       });
 
       pipe(
-        createTournament(name),
+        createTournament(name, isMega),
         E.fold(
           (error) => {
             fastify.log.error({
@@ -57,8 +57,7 @@ export async function tournamentRoutes(fastify: FastifyInstance) {
             });
 
             const createdTourna: TournamentResponse = {
-              id: tournament.id,
-              name: tournament.name,
+              ...tournament,
               createdAt: tournament.createdAt.toISOString(),
             };
             return reply.status(201).send(createdTourna);

@@ -21,10 +21,14 @@ export const createStorage = (): TournamentStorage => ({
 export const storage = createStorage();
 
 // Tournament operations
-export const createTournament = (name: string): Either<string, Tournament> => {
+export const createTournament = (
+  name: string,
+  isMega: boolean,
+): Either<string, Tournament> => {
   const tournament: Tournament = {
     id: uuidv4(),
     name,
+    isMega,
     createdAt: new Date(),
   };
 

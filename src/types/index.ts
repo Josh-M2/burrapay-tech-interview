@@ -4,6 +4,7 @@ import * as t from "io-ts";
 export interface Tournament {
   id: string;
   name: string;
+  isMega: boolean;
   createdAt: Date;
 }
 
@@ -33,6 +34,7 @@ export type PokemonApiResponse = t.TypeOf<typeof PokemonApiResponseCodec>;
 // Request types for creating tournaments
 export const CreateTournamentRequestCodec = t.type({
   name: t.string,
+  isMega: t.boolean,
 });
 
 export type CreateTournamentRequest = t.TypeOf<
@@ -50,6 +52,7 @@ export type CreatePlayerRequest = t.TypeOf<typeof CreatePlayerRequestCodec>;
 export interface TournamentResponse {
   id: string;
   name: string;
+  isMega: boolean;
   createdAt: string;
 }
 
