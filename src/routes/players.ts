@@ -1,27 +1,30 @@
-import fastify, {
-  FastifyInstance,
-  FastifyRequest,
-  FastifyReply,
-} from "fastify";
-import { pipe } from "fp-ts/lib/function";
-import { Either } from "fp-ts/lib/Either";
-import * as E from "fp-ts/lib/Either";
-import * as O from "fp-ts/lib/Option";
-import * as TE from "fp-ts/lib/TaskEither";
+import { FastifyInstance } from "fastify";
+import { Effect, Schema } from "effect/index";
+import { pipe } from "effect";
 import {
   CreatePlayerRequest,
-  CreatePlayerRequestCodec,
-  Player,
-  PlayerResponse,
+  CreatePlayerRequestSchema,
   PokemonApiResponse,
-  PokemonApiResponseCodec,
+  PokemonApiResponseSchema,
+  ValidatePokemon,
 } from "../types/index.ts";
 import {
   createPlayer,
   getPlayersByTourId,
-  getPlayersByTournament,
   getTournament,
 } from "../storage/index.ts";
+import {
+  CachedError,
+  CacheExpiredError,
+  CacheNotFoundError,
+  FetchPokemonError,
+  InvalidMegaPokemonError,
+  InvalidPokeApiResponseError,
+  InvalidRequestBodyError,
+  PokeApiRateLimitExceed,
+  PokemonErrorTags,
+  TournamentNotFoundError,
+} from "../types/error.ts";
 
 const POKEAPI_CACHE_TTL_MS = 60 * 60 * 1000;
 const POKEAPI_RATE_LIMIT_WINDOW_MS = 60 * 1000;
@@ -34,43 +37,43 @@ const pokemonCache = new Map<
 
 const pokeApiCallHistory: number[] = [];
 
-const checkRateLimit = (): Either<string, void> => {
-  const now = Date.now();
-
-  const recentCalls = pokeApiCallHistory.filter(
-    (timestamp) => now - timestamp < POKEAPI_RATE_LIMIT_WINDOW_MS,
+const checkRateLimit = (): Effect.Effect<void, PokeApiRateLimitExceed> =>
+  Effect.sync(() => {
+    const now = Date.now();
+    const recentCalls = pokeApiCallHistory.filter(
+      (timestamp) => now - timestamp < POKEAPI_RATE_LIMIT_WINDOW_MS,
+    );
+    return { now, recentCalls };
+  }).pipe(
+    Effect.filterOrFail(
+      ({ recentCalls }) => recentCalls.length < POKEAPI_RATE_LIMIT_MAX,
+      () => PokeApiRateLimitExceed(),
+    ),
+    Effect.tap(({ now, recentCalls }) =>
+      Effect.sync(() => {
+        recentCalls.push(now);
+        pokeApiCallHistory.length = 0;
+        pokeApiCallHistory.push(...recentCalls);
+      }),
+    ),
+    Effect.asVoid,
   );
 
-  console.log({
-    event: "recent_call_history",
-    pokeApiCallHistory,
-  });
-
-  if (recentCalls.length >= POKEAPI_RATE_LIMIT_MAX) {
-    return E.left("PokeAPI rate limit exceeded");
-  }
-
-  recentCalls.push(now);
-  pokeApiCallHistory.length = 0;
-  pokeApiCallHistory.push(...recentCalls);
-
-  return E.right(undefined);
-};
-
-const getCachedPokemon = (name: string): Either<string, PokemonApiResponse> => {
-  const cached = pokemonCache.get(name.toLowerCase());
-
-  if (!cached) {
-    return E.left("No Cache");
-  }
-
-  if (Date.now() > cached.expiresAt) {
-    pokemonCache.delete(name.toLowerCase());
-    return E.left("Cache expired");
-  }
-
-  return E.right(cached.data);
-};
+const getCachedPokemon = (
+  name: string,
+): Effect.Effect<PokemonApiResponse, CachedError> =>
+  Effect.sync(() => pokemonCache.get(name.toLowerCase())).pipe(
+    Effect.flatMap((cached) =>
+      cached ? Effect.succeed(cached) : Effect.fail(CacheNotFoundError()),
+    ),
+    Effect.flatMap((cached) =>
+      Date.now() > cached.expiresAt
+        ? Effect.sync(() => pokemonCache.delete(name.toLowerCase())).pipe(
+            Effect.flatMap(() => Effect.fail(CacheExpiredError())),
+          )
+        : Effect.succeed(cached.data),
+    ),
+  );
 
 const setCachedPokemon = (name: string, data: PokemonApiResponse) => {
   pokemonCache.set(name.toLowerCase(), {
@@ -79,99 +82,64 @@ const setCachedPokemon = (name: string, data: PokemonApiResponse) => {
   });
 };
 
+const fetchAndCachePokemon = (
+  name: string,
+): Effect.Effect<
+  PokemonApiResponse,
+  PokemonErrorTags | PokeApiRateLimitExceed
+> =>
+  pipe(
+    checkRateLimit(),
+    Effect.flatMap(() => fetchPokeApi(name)),
+    Effect.flatMap((response) =>
+      Effect.tryPromise({
+        try: () => response.json(),
+        catch: () => InvalidPokeApiResponseError(),
+      }),
+    ),
+    Effect.flatMap(decodePokemonApiResponse),
+    Effect.tap((pokemon) => setCachedPokemon(name, pokemon)),
+  );
+
 // TODO for interviewee: Implement player routes using fp-ts patterns
 // CRITICAL REQUIREMENT: ONLY Pokemon can be added as players - reject all non-Pokemon names!
 
 // TODO: Implement Pokemon API validation function using TaskEither
 // const validatePokemon = (name: string): TE.TaskEither<string, PokemonApiResponse> => ...
 
-const isValidPokemonName = (name: string): E.Either<string, string> => {
-  const normalized = name.trim().toLowerCase();
-
-  const pokemonNameRegex = /^[a-z0-9-]+$/;
-
-  if (!pokemonNameRegex.test(normalized)) {
-    return E.left("Name is not a valid Pokemon");
-  }
-
-  return E.right(normalized);
-};
-
 const isMegaPokemon = (
-  name: string,
-  tournamentId: string,
-): E.Either<string, string> => {
-  if (!tournamentId) {
-    return E.left("TournamentId is required");
-  }
+  request: ValidatePokemon,
+): Effect.Effect<string, InvalidMegaPokemonError | TournamentNotFoundError> => {
+  const { tournamentId, name } = request;
 
-  const tournamentData = getTournament(tournamentId);
-
-  if (O.isNone(tournamentData)) {
-    return E.left("Tournament not found");
-  }
-
-  const { isMega } = tournamentData.value;
-
-  if (isMega && !name.endsWith("mega")) {
-    return E.left("Only Mega Pokemon are allowed in Mega tournaments");
-  }
-
-  return E.right(name);
+  return Effect.succeed(tournamentId).pipe(
+    Effect.flatMap(getTournament),
+    Effect.flatMap((tournament) =>
+      tournament.isMega && !name.endsWith("mega")
+        ? Effect.fail(InvalidMegaPokemonError())
+        : Effect.succeed(request.name),
+    ),
+  );
 };
 
-const validatePokemon = (
+const fetchPokeApi = (
   name: string,
-  tournamentId: string,
-): TE.TaskEither<string, PokemonApiResponse> =>
-  pipe(
-    isMegaPokemon(name, tournamentId),
-    E.chain((name) => isValidPokemonName(name)),
-    TE.fromEither,
-    TE.chain((normalized) =>
-      pipe(
-        getCachedPokemon(normalized),
-        E.fold(
-          () =>
-            pipe(
-              checkRateLimit(),
-              TE.fromEither,
-              TE.chain(() =>
-                TE.tryCatch(
-                  async () => {
-                    const res = await fetch(
-                      `https://pokeapi.co/api/v2/pokemon/${normalized}`,
-                    );
-
-                    if (!res.ok) {
-                      throw new Error("Name is not a valid Pokemon");
-                    }
-
-                    const decodedPokemonRes = PokemonApiResponseCodec.decode(
-                      await res.json(),
-                    );
-
-                    if (E.isLeft(decodedPokemonRes)) {
-                      throw new Error("Invalid PokeAPI response");
-                    }
-
-                    const pokemon = decodedPokemonRes.right;
-
-                    setCachedPokemon(name, pokemon);
-
-                    return pokemon;
-                  },
-                  (error) =>
-                    error instanceof Error
-                      ? error.message
-                      : "Failed to fetch Pokemon",
-                ),
-              ),
-            ),
-          (cachedPokemon) => TE.right(cachedPokemon),
-        ),
-      ),
+): Effect.Effect<Response, PokemonErrorTags> =>
+  Effect.tryPromise({
+    try: async () => await fetch(`https://pokeapi.co/api/v2/pokemon/${name}`),
+    catch: () => FetchPokemonError(),
+  }).pipe(
+    Effect.filterOrFail(
+      (response) => response.ok,
+      () => FetchPokemonError(),
     ),
+  );
+
+const decodePokemonApiResponse = (
+  input: unknown,
+): Effect.Effect<PokemonApiResponse, InvalidPokeApiResponseError> =>
+  Schema.decodeUnknown(PokemonApiResponseSchema)(input).pipe(
+    Effect.mapError(() => InvalidPokeApiResponseError()),
   );
 
 export async function playerRoutes(fastify: FastifyInstance) {
@@ -184,86 +152,92 @@ export async function playerRoutes(fastify: FastifyInstance) {
   }>("/tournaments/:tournamentId/players", async (request, reply) => {
     // TODO: Implement Pokemon validation and player creation logic
 
-    const decodedBody = CreatePlayerRequestCodec.decode(request.body);
+    return pipe(
+      request.body,
+      Schema.decodeUnknown(CreatePlayerRequestSchema),
+      Effect.mapError(() => InvalidRequestBodyError()),
 
-    if (E.isLeft(decodedBody)) {
-      fastify.log.warn({
-        event: "invalid_player_reqeust_body",
-        body: request.body,
-      });
-
-      return reply.status(400).send({ error: "Invalid body request" });
-    }
-
-    const { name } = decodedBody.right;
-    const { tournamentId } = request.params;
-
-    fastify.log.info({
-      event: "create_player_request",
-      tournamentId,
-      playername: name,
-    });
-
-    const tournamentExists = pipe(
-      getTournament(tournamentId),
-      O.fold(
-        () => false,
-        () => true,
+      Effect.tap(() =>
+        getTournament(request.params.tournamentId).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() =>
+              fastify.log.warn({
+                event: "tournament_not_found",
+                tournamentId: request.params.tournamentId,
+              }),
+            ),
+          ),
+        ),
       ),
-    );
 
-    if (!tournamentExists) {
-      fastify.log.warn({
-        event: "tournament_not_found",
-        tournamentId,
-      });
+      Effect.flatMap((body) =>
+        pipe(
+          isMegaPokemon({
+            tournamentId: request.params.tournamentId,
+            name: body.name,
+          }),
+          Effect.map((pokemonName) => ({
+            body,
+            pokemonName,
+          })),
+        ),
+      ),
 
-      return reply.status(404).send({ error: "Tournament not found" });
-    }
+      Effect.flatMap(({ body, pokemonName }) =>
+        pipe(
+          getCachedPokemon(pokemonName),
+          Effect.catchTags({
+            CacheNotFoundError: () => fetchAndCachePokemon(pokemonName),
+            CacheExpiredError: () => fetchAndCachePokemon(pokemonName),
+          }),
+          Effect.map((pokemon) => ({
+            body,
+            pokemon,
+          })),
+        ),
+      ),
 
-    pipe(
-      await validatePokemon(request.body.name, tournamentId)(),
-      E.chain((pokemon) => {
-        fastify.log.info({
-          event: "validated_pokemon",
-          pokemonId: pokemon.id,
-          pokemonName: pokemon.name,
-          tournamentId,
-        });
+      Effect.flatMap(({ body, pokemon }) =>
+        createPlayer(body.name, request.params.tournamentId, pokemon),
+      ),
 
-        return createPlayer(name, tournamentId, {
-          id: pokemon.id,
-          types: pokemon.types.map((t) => t.type.name),
-          height: pokemon.height,
-          weight: pokemon.weight,
-        });
+      Effect.matchEffect({
+        onFailure: (error) =>
+          Effect.sync(() => {
+            fastify.log.warn({
+              event: "create_player_failed",
+              tournamentId: request.params.tournamentId,
+              error: error._tag,
+            });
+
+            switch (error._tag) {
+              case "InvalidRequestBodyError":
+                return reply
+                  .status(400)
+                  .send({ error: "Invalid body request" });
+              case "TournamentNotFoundError":
+                return reply.status(404).send({ error: "Tournament not found" });
+              case "InvalidMegaPokemonError":
+                return reply
+                  .status(400)
+                  .send({ error: "Pokemon must be mega for this tournament" });
+              case "PokeApiRateLimitExceed":
+                return reply
+                  .status(429)
+                  .send({ error: "Pokemon API rate limit exceeded" });
+              case "FetchPokemonError":
+              case "InvalidPokeApiResponseError":
+                return reply
+                  .status(400)
+                  .send({ error: "Name is not a valid Pokemon" });
+            }
+          }),
+        onSuccess: (player) =>
+          Effect.sync(() => {
+            return reply.code(201).send(player);
+          }),
       }),
-      E.fold(
-        (error) => {
-          fastify.log.error({
-            event: "create_player_failed",
-            tournamentId,
-            playerName: name,
-            error,
-          });
-
-          if (error === "Tournament not found")
-            return reply.status(404).send({ error });
-          return reply.status(400).send({ error });
-        },
-        (player) => {
-          fastify.log.info({
-            event: "created_player",
-            playerId: player.id,
-            playerName: player.name,
-            tournamentId: player.tournamentId,
-          });
-
-          const response: PlayerResponse = player;
-          console.log("responselayer:,", player);
-          return reply.status(201).send(response);
-        },
-      ),
+      Effect.runPromise,
     );
 
     // reply.status(501).send({ error: "Not implemented yet" });
@@ -271,9 +245,7 @@ export async function playerRoutes(fastify: FastifyInstance) {
 
   fastify.get<{
     Params: { tournamentId: string };
-    Body: CreatePlayerRequest;
   }>("/tournaments/:tournamentId/players", async (request, reply) => {
-    // TODO: Implement Pokemon validation and player creation logic
     const { tournamentId } = request.params;
 
     fastify.log.info({
@@ -281,56 +253,44 @@ export async function playerRoutes(fastify: FastifyInstance) {
       tournamentId,
     });
 
-    if (typeof tournamentId !== "string") {
-      fastify.log.warn({
-        event: "invalid_tournamentId",
-        tournamentId,
-      });
-
-      return reply.status(400).send({ error: "Tournament ID is required" });
-    }
-
-    const tournamentExists = pipe(
-      getTournament(tournamentId),
-      O.fold(
-        () => false,
-        () => true,
-      ),
-    );
-
-    if (!tournamentExists) {
-      fastify.log.warn({
-        event: "tournament_not_found",
-        tournamentId,
-      });
-      return reply.status(404).send({ error: "Tournament not found" });
-    }
-
     pipe(
       getPlayersByTourId(tournamentId),
-      E.fold(
-        (error) => {
-          fastify.log.error({
-            event: "get_players_failed",
-            tournamentId,
-            error,
-          });
 
-          if (error === "Tournament not found")
-            return reply.status(404).send({ error });
-          return reply.status(400).send({ error });
-        },
-        (players) => {
+      Effect.tap((players) =>
+        Effect.sync(() => {
           fastify.log.info({
             event: "players_retrieved",
             tournamentId,
             playerCount: players.length,
           });
-          return reply.status(200).send(players);
-        },
+        }),
       ),
-    );
 
-    // reply.status(501).send({ error: "Not implemented yet" });
+      Effect.match({
+        onFailure: (error) => {
+          fastify.log.error({
+            event: "get_players_failed",
+            tournamentId,
+            error: error._tag,
+          });
+
+          switch (error._tag) {
+            case "TournamentIdRequiredError":
+              return reply
+                .status(400)
+                .send({ error: "Tournament ID is required" });
+
+            case "TournamentNotFoundError":
+              return reply.status(404).send({ error: "Tournament not found" });
+
+            case "NoPlayersFoundError":
+              return reply.status(404).send({ error: "No players found" });
+          }
+        },
+
+        onSuccess: (players) => reply.status(200).send(players),
+      }),
+      Effect.runPromise,
+    );
   });
 }

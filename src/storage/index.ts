@@ -1,9 +1,17 @@
-import { Option } from "fp-ts/lib/Option";
-import { Either } from "fp-ts/lib/Either";
-import * as O from "fp-ts/lib/Option";
-import * as E from "fp-ts/lib/Either";
-import { Tournament, Player } from "../types/index.ts";
+import {
+  Tournament,
+  Player,
+  CreateTournamentRequest,
+  PokemonApiResponse,
+} from "../types/index.ts";
 import { v4 as uuidv4 } from "uuid";
+import { Effect, pipe } from "effect/index";
+import {
+  GetPlayersError,
+  NoPlayersFoundError,
+  TournamentIdRequiredError,
+  TournamentNotFoundError,
+} from "../types/error.ts";
 
 // Storage interfaces
 export interface TournamentStorage {
@@ -22,93 +30,94 @@ export const storage = createStorage();
 
 // Tournament operations
 export const createTournament = (
-  name: string,
-  isMega: boolean,
-): Either<string, Tournament> => {
-  const tournament: Tournament = {
-    id: uuidv4(),
-    name,
-    isMega,
-    createdAt: new Date(),
-  };
+  request: CreateTournamentRequest,
+): Effect.Effect<Tournament> => {
+  return Effect.sync(() => {
+    const { name, isMega } = request;
 
-  storage.tournaments.set(tournament.id, tournament);
-  return E.right(tournament);
+    const tournament: Tournament = {
+      id: uuidv4(),
+      name,
+      isMega,
+      createdAt: new Date(),
+    };
+
+    storage.tournaments.set(tournament.id, tournament);
+    return tournament;
+  });
 };
 
-export const getTournament = (id: string): Option<Tournament> => {
-  return O.fromNullable(storage.tournaments.get(id));
+export const getTournament = (
+  id: string,
+): Effect.Effect<Tournament, TournamentNotFoundError> =>
+  Effect.sync(() => storage.tournaments.get(id)).pipe(
+    Effect.flatMap((tournament) =>
+      tournament
+        ? Effect.succeed(tournament)
+        : Effect.fail(TournamentNotFoundError()),
+    ),
+  );
+
+export const getTournaments = (): Effect.Effect<
+  Tournament[],
+  TournamentNotFoundError
+> => {
+  return Effect.sync(() => [...storage.tournaments.values()]).pipe(
+    Effect.filterOrFail(
+      (tournaments) => tournaments.length > 0,
+      () => TournamentNotFoundError(),
+    ),
+  );
 };
-
-export const getTournaments = (): Either<string, Tournament[]> => {
-  const tournament = [...storage.tournaments.values()];
-
-  if (tournament.length === 0) {
-    return E.left("No tournament found");
-  }
-
-  return E.right(tournament);
-};
-
 // Player operations
 export const createPlayer = (
   name: string,
   tournamentId: string,
-  pokemonData: {
-    id: number;
-    types: string[];
-    height: number;
-    weight: number;
-  },
-): Either<string, Player> => {
-  // Check if tournament exists
-  const tournament = getTournament(tournamentId);
+  pokemon: PokemonApiResponse,
+): Effect.Effect<Player, TournamentNotFoundError> =>
+  pipe(
+    getTournament(tournamentId),
+    Effect.flatMap(() =>
+      Effect.sync(() => {
+        const player: Player = {
+          id: uuidv4(),
+          name,
+          tournamentId,
+          pokemonData: {
+            id: pokemon.id,
+            types: pokemon.types.map((t) => t.type.name),
+            height: pokemon.height,
+            weight: pokemon.weight,
+          },
+        };
 
-  if (O.isNone(tournament)) {
-    return E.left("Tournament not found");
-  }
+        storage.players.set(player.id, player);
 
-  const player: Player = {
-    id: uuidv4(),
-    name,
-    tournamentId,
-    pokemonData,
-  };
-
-  storage.players.set(player.id, player);
-  return E.right(player);
-};
-
-export const getPlayer = (id: string): Option<Player> => {
-  return O.fromNullable(storage.players.get(id));
-};
+        return player;
+      }),
+    ),
+  );
 
 export const getPlayersByTourId = (
   tournamentId: string,
-): Either<string, Player[]> => {
+): Effect.Effect<Player[], GetPlayersError> => {
   if (!tournamentId) {
-    return E.left("TournamentId is Required");
+    return Effect.fail(TournamentIdRequiredError());
   }
 
-  const tournament = getTournament(tournamentId);
-
-  console.log("tournament:", tournament);
-
-  if (O.isNone(tournament)) {
-    return E.left("Tournament not found");
-  }
-
-  const tournamentPlayers = [...storage.players.values()].filter(
-    (player) => player.tournamentId === tournamentId,
-  );
-
-  if (tournamentPlayers.length === 0) E.left("No Players found");
-
-  return E.right(tournamentPlayers);
-};
-
-export const getPlayersByTournament = (tournamentId: string): Player[] => {
-  return Array.from(storage.players.values()).filter(
-    (player) => player.tournamentId === tournamentId,
+  return pipe(
+    getTournament(tournamentId),
+    Effect.flatMap(() =>
+      Effect.sync(() =>
+        [...storage.players.values()].filter(
+          (player) => player.tournamentId === tournamentId,
+        ),
+      ),
+    ),
+    Effect.flatMap((players) =>
+      players.length > 0
+        ? Effect.succeed(players)
+        : Effect.fail(NoPlayersFoundError()),
+    ),
   );
 };

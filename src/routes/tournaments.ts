@@ -1,13 +1,16 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { pipe } from "fp-ts/lib/function";
-import * as E from "fp-ts/lib/Either";
-import * as TE from "fp-ts/lib/TaskEither";
 import {
   CreateTournamentRequest,
-  CreateTournamentRequestCodec,
+  CreateTournamentRequestSchem,
   TournamentResponse,
 } from "../types/index.ts";
 import { createTournament, getTournaments } from "../storage/index.ts";
+import { Effect, Schema } from "effect/index";
+import { pipe } from "effect";
+import {
+  InvalidRequestBodyError,
+  TournamentNotFoundError,
+} from "../types/error.ts";
 
 export async function tournamentRoutes(fastify: FastifyInstance) {
   // TODO: Implement POST /tournaments endpoint using fp-ts patterns
@@ -21,48 +24,32 @@ export async function tournamentRoutes(fastify: FastifyInstance) {
         body: request.body,
       });
 
-      const decodedBody = CreateTournamentRequestCodec.decode(request.body);
-
-      if (E.isLeft(decodedBody)) {
-        fastify.log.warn({
-          event: "invalid_player_reqeust_body",
-          body: request.body,
-        });
-        return reply.status(400).send("Invalid body request");
-      }
-
-      const { name, isMega } = decodedBody.right;
-
-      fastify.log.info({
-        event: "create_tournament_validation_success",
-        tournamentName: name,
-      });
-
-      pipe(
-        createTournament(name, isMega),
-        E.fold(
-          (error) => {
-            fastify.log.error({
-              event: "create_tournament_failed",
-              tournamentName: name,
-              error,
+      return pipe(
+        request.body,
+        Schema.decodeUnknown(CreateTournamentRequestSchem),
+        Effect.mapError(() => InvalidRequestBodyError()),
+        Effect.flatMap(createTournament),
+        Effect.matchEffect({
+          onFailure: (error) => {
+            if (error._tag === "InvalidRequestBodyError") {
+              return Effect.sync(() => {
+                reply.status(400).send("Invalid body request");
+              });
+            }
+            return Effect.sync(() => {
+              reply.status(400).send({ error });
             });
-            return reply.status(400).send({ error });
           },
-          (tournament) => {
-            fastify.log.info({
-              event: "tournament_created",
-              tournamentId: tournament.id,
-              tournamentName: tournament.name,
-            });
-
-            const createdTourna: TournamentResponse = {
-              ...tournament,
-              createdAt: tournament.createdAt.toISOString(),
-            };
-            return reply.status(201).send(createdTourna);
-          },
-        ),
+          onSuccess: (tournament) =>
+            Effect.sync(() => {
+              const createdTourna: TournamentResponse = {
+                ...tournament,
+                createdAt: tournament.createdAt.toISOString(),
+              };
+              reply.status(201).send(createdTourna);
+            }),
+        }),
+        Effect.runPromise,
       );
     },
   );
@@ -73,24 +60,40 @@ export async function tournamentRoutes(fastify: FastifyInstance) {
       event: "get_tournaments_request_received",
     });
 
-    return pipe(
-      getTournaments(),
-      E.fold(
-        (error) => {
-          fastify.log.warn({
-            event: "get_tournaments_failed",
-            error,
+    return getTournaments().pipe(
+      Effect.mapError(() => TournamentNotFoundError()),
+      Effect.matchEffect({
+        onFailure: (error) => {
+          if (error._tag === "TournamentNotFoundError")
+            return Effect.sync(() => {
+              fastify.log.warn({
+                event: "no_tournaments_found",
+                error,
+              });
+
+              reply.status(200).send("No Tournaments Found");
+            });
+
+          return Effect.sync(() => {
+            fastify.log.warn({
+              event: "get_tournaments_failed",
+              error,
+            });
+
+            reply.status(404).send({ error });
           });
-          return reply.status(404).send({ error });
         },
-        (tournas) => {
-          fastify.log.info({
-            event: "get_tournaments_success",
-            count: tournas.length,
-          });
-          return reply.status(200).send(tournas);
-        },
-      ),
+        onSuccess: (tournaments) =>
+          Effect.sync(() => {
+            fastify.log.info({
+              event: "get_tournaments_success",
+              count: tournaments.length,
+            });
+
+            reply.status(200).send(tournaments);
+          }),
+      }),
+      Effect.runPromise,
     );
   });
 }

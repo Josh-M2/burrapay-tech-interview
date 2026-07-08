@@ -1,4 +1,4 @@
-import * as t from "io-ts";
+import { Schema } from "effect/index";
 
 // Tournament interface
 export interface Tournament {
@@ -21,32 +21,43 @@ export interface Player {
   };
 }
 
-export const PokemonApiResponseCodec = t.type({
-  id: t.number,
-  name: t.string,
-  types: t.array(t.type({ type: t.type({ name: t.string }) })),
-  height: t.number,
-  weight: t.number,
+export interface ValidatePokemon {
+  name: Player["id"];
+  tournamentId: Player["tournamentId"];
+}
+
+export const PokemonApiResponseSchema = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  types: Schema.Array(
+    Schema.Struct({ type: Schema.Struct({ name: Schema.String }) }),
+  ),
+  height: Schema.Number,
+  weight: Schema.Number,
 });
 
-export type PokemonApiResponse = t.TypeOf<typeof PokemonApiResponseCodec>;
+export type PokemonApiResponse = Schema.Schema.Type<
+  typeof PokemonApiResponseSchema
+>;
 
 // Request types for creating tournaments
-export const CreateTournamentRequestCodec = t.type({
-  name: t.string,
-  isMega: t.boolean,
+export const CreateTournamentRequestSchem = Schema.Struct({
+  name: Schema.String,
+  isMega: Schema.Boolean,
 });
 
-export type CreateTournamentRequest = t.TypeOf<
-  typeof CreateTournamentRequestCodec
+export type CreateTournamentRequest = Schema.Schema.Type<
+  typeof CreateTournamentRequestSchem
 >;
 
 // Request types for adding players
-export const CreatePlayerRequestCodec = t.type({
-  name: t.string,
+export const CreatePlayerRequestSchema = Schema.Struct({
+  name: Schema.String,
 });
 
-export type CreatePlayerRequest = t.TypeOf<typeof CreatePlayerRequestCodec>;
+export type CreatePlayerRequest = Schema.Schema.Type<
+  typeof CreatePlayerRequestSchema
+>;
 
 // Response types
 export interface TournamentResponse {
